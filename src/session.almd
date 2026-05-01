@@ -1,0 +1,109 @@
+// session — persist + restore conversation history.
+//
+// Sessions live under `~/.homullus/sessions/<unix-ts>.json`. On each
+// turn the active session is auto-saved by main.almd; `/resume` loads
+// the most recent file.
+//
+// Serialization is straightforward JSON — Messages flatten to
+// `{role, content, tool_call_id, tool_calls: [{id, name, arguments}]}`.
+
+import almai
+import env
+import fs
+import json
+
+effect fn sessions_dir() -> String =
+  match env.get("HOME") {
+    some(home) => "${home}/.homullus/sessions"
+    none => "./.homullus/sessions"
+  }
+
+effect fn ensure_dir() -> Result[String, String] = {
+  let dir = sessions_dir()
+  match fs.mkdir_p(dir) {
+    err(e) => err("session dir: ${e}")
+    ok(_) => ok(dir)
+  }
+}
+
+effect fn current_dir() -> String = sessions_dir()
+
+fn tool_call_to_value(tc: almai.ToolCall) -> Value =
+  json.object([
+    ("id", json.from_string(tc.id)),
+    ("name", json.from_string(tc.name)),
+    ("arguments", json.from_string(tc.arguments)),
+  ])
+
+fn message_to_value(m: almai.Message) -> Value =
+  json.object([
+    ("role", json.from_string(m.role)),
+    ("content", json.from_string(m.content)),
+    ("tool_call_id", json.from_string(m.tool_call_id)),
+    ("tool_calls", json.array(list.map(m.tool_calls, (tc) => tool_call_to_value(tc)))),
+  ])
+
+fn value_to_tool_call(v: Value) -> almai.ToolCall =
+  ToolCall {
+    id: json.get_string(v, "id") |> option.unwrap_or(""),
+    name: json.get_string(v, "name") |> option.unwrap_or(""),
+    arguments: json.get_string(v, "arguments") |> option.unwrap_or("{}"),
+  }
+
+fn value_to_message(v: Value) -> almai.Message = {
+  let role = json.get_string(v, "role") |> option.unwrap_or("user")
+  let content = json.get_string(v, "content") |> option.unwrap_or("")
+  let tool_call_id = json.get_string(v, "tool_call_id") |> option.unwrap_or("")
+  let tool_calls_arr = json.get_array(v, "tool_calls") |> option.unwrap_or([])
+  let tool_calls = list.map(tool_calls_arr, (tc) => value_to_tool_call(tc))
+  match role {
+    "system"    => Message { role: role, content: content, tool_call_id: tool_call_id, tool_calls: tool_calls }
+    "user"      => Message { role: role, content: content, tool_call_id: tool_call_id, tool_calls: tool_calls }
+    "assistant" => Message { role: role, content: content, tool_call_id: tool_call_id, tool_calls: tool_calls }
+    "tool"      => Message { role: role, content: content, tool_call_id: tool_call_id, tool_calls: tool_calls }
+    _ => Message { role: "user", content: content, tool_call_id: "", tool_calls: [] }
+  }
+}
+
+// Save a session under `<sessions_dir>/<unix-ts>.json`. Returns the
+// path on success.
+effect fn save(history: List[almai.Message]) -> Result[String, String] = {
+  let dir = ensure_dir()!
+  let ts = int.to_string(env.unix_timestamp())
+  let path = "${dir}/${ts}.json"
+  let body = json.stringify(json.object([
+    ("messages", json.array(list.map(history, (m) => message_to_value(m)))),
+  ]))
+  match fs.write(path, body) {
+    err(e) => err("session write: ${e}")
+    ok(_) => ok(path)
+  }
+}
+
+// Load the most recently saved session. Returns an empty history if
+// the directory doesn't exist or has no .json files.
+effect fn resume_latest() -> Result[List[almai.Message], String] = {
+  let dir = current_dir()
+  match fs.list_dir(dir) {
+    err(_) => ok([])
+    ok(entries) => {
+      let json_files = list.filter(entries, (n) => string.ends_with(n, ".json"))
+      if list.is_empty(json_files) then ok([])
+      else {
+        // Filenames are unix timestamps — lexicographic max == most recent.
+        let latest = list.max(json_files) |> option.unwrap_or("")
+        let path = "${dir}/${latest}"
+        match fs.read_text(path) {
+          err(e) => err("session read: ${e}")
+          ok(text) => match json.parse(text) {
+            err(e) => err("session parse: ${e}")
+            ok(v) => {
+              let msgs_arr = json.get_array(v, "messages") |> option.unwrap_or([])
+              ok(list.map(msgs_arr, (m) => value_to_message(m)))
+            }
+          }
+        }
+      }
+    }
+  }
+}

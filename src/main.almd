@@ -19,6 +19,7 @@ import self.agent as agent
 import self.tools as ftools
 import self.permission as perm
 import self.context as homu_context
+import self.session as session
 
 type State = {
   model: String,
@@ -74,6 +75,7 @@ effect fn cmd_help() -> Unit =
       /tools          List available tools
       /trust [mode]   Set permission mode (default | accept-edits | bypass)
       /clear          Clear conversation history
+      /resume         Resume the most recently saved session
       /help           Show this help
       /version        Show homullus version
       /exit           Exit homullus
@@ -104,6 +106,17 @@ effect fn handle_slash(state: State, name: String, arg: String) -> Option[State]
     "clear" => {
       io.print("Conversation cleared.\n")
       some({ ...state, history: [] })
+    }
+    "resume" => match session.resume_latest() {
+      err(e) => { io.print("resume failed: ${e}\n") ; some(state) }
+      ok(prior) =>
+        if list.is_empty(prior) then {
+          io.print("No saved session to resume.\n")
+          some(state)
+        } else {
+          io.print("Resumed session with ${int.to_string(list.len(prior))} messages.\n")
+          some({ ...state, history: prior })
+        }
     }
     "model" =>
       if arg == "" then {
@@ -146,6 +159,7 @@ effect fn repl(state: State) -> Unit = {
         some(next) => repl(next)
       }
       none => {
+        let threshold = read_compact_threshold()
         let result = agent.run_turn(
           (m, ms, op) => agent.streaming_provider(m, ms, op),
           state.model,
@@ -153,8 +167,13 @@ effect fn repl(state: State) -> Unit = {
           state.system_prompt,
           state.mode,
           input,
-          read_compact_threshold(),
+          threshold,
         )!
+        // Best-effort save; don't error out the REPL on disk failure.
+        match session.save(result.history) {
+          err(_) => ()
+          ok(_) => ()
+        }
         io.print("\n")
         repl({ ...state, history: result.history, usage: agent.add_usage(state.usage, result.usage) })
       }
