@@ -3,13 +3,18 @@
 // One user input → one or more LLM calls. While the LLM returns
 // tool_calls, we execute them under the permission resolver, feed the
 // results back as role:"tool" messages, and re-call. When the LLM
-// returns plain text, we surface it.
+// returns plain text, the provider is responsible for surfacing it
+// (streaming providers print as deltas arrive; non-streaming providers
+// print the assembled content once).
 //
 // The LLM call itself is injected: callers pass any function with the
 // shape (model, msgs, opts) -> Result[LLMResponse, String]. Production
-// uses almai.call_retry; tests use a scripted provider.
+// uses `streaming_provider` (live token output for openai/openrouter/
+// groq, falls back to `call_retry` + one-shot print for the rest);
+// tests use a scripted provider that doesn't print.
 
 import almai
+import io
 import json
 
 import self.tools as ftools
@@ -17,8 +22,33 @@ import self.permission as perm
 
 let MAX_TOOL_ROUNDS = 12
 
-// Default production provider — wraps almai.call_retry with sensible
-// retry count. Pass this to run_turn from main.almd.
+fn supports_streaming(model: String) -> Bool =
+  string.starts_with(model, "openai/") or
+  string.starts_with(model, "openrouter/") or
+  string.starts_with(model, "groq/")
+
+// Production provider. Streams text deltas to stdout for the
+// OpenAI-shaped providers; for the rest, runs `call_retry` and prints
+// the final content once. Either way, the returned LLMResponse carries
+// the full assembled content + tool_calls (so the agent loop can keep
+// dispatching tools).
+effect fn streaming_provider(
+  model: String,
+  msgs: List[almai.Message],
+  opts: almai.CallOptions,
+) -> Result[almai.LLMResponse, String] =
+  if supports_streaming(model) then
+    almai.call_streaming(model, msgs, opts, (delta) => io.print(delta))
+  else
+    match almai.call_retry(model, msgs, opts, 3) {
+      err(e) => err(e)
+      ok(r)  => {
+        if r.content != "" then io.print(r.content) else ()
+        ok(r)
+      }
+    }
+
+// Kept as an alias so older callers / tests still compile.
 effect fn default_provider(
   model: String,
   msgs: List[almai.Message],
@@ -99,7 +129,10 @@ effect fn loop_round(
         ok(msgs)
       }
       ok(r) => {
-        print_text(r.content)
+        // Provider has already printed (streamed deltas or one-shot
+        // for non-streamers). Add a trailing newline so the next REPL
+        // event isn't glued to the assistant's last line.
+        if r.content != "" then println("") else ()
         // Preserve tool_calls on the assistant message so the next turn
         // sees a proper tool_use → tool_result roundtrip.
         let with_assistant = if list.is_empty(r.tool_calls) then
