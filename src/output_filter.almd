@@ -1,0 +1,111 @@
+// output_filter — compress long tool outputs before they hit the LLM.
+//
+// Inspired by rtk (https://github.com/rtk-ai/rtk). Three rules:
+//   1. Output under MAX_PASSTHROUGH chars goes through unchanged.
+//   2. Output between MAX_PASSTHROUGH and HARD_CAP gets head/tail
+//      truncated: keep ~70% from the head, ~20% from the tail, drop
+//      the middle with a `... <N lines elided> ...` marker.
+//   3. Specific commands get pattern-aware compression (git status,
+//      npm install, test runners) — collapse repetitive lines into
+//      counts.
+//
+// All functions are pure — they take the tool name + raw output and
+// return the (possibly shorter) string.
+
+let MAX_PASSTHROUGH = 2000
+let HARD_CAP = 8000
+let HEAD_RATIO = 70  // percent of HARD_CAP retained from the head
+let TAIL_RATIO = 20
+
+fn line_count(s: String) -> Int = list.len(string.lines(s))
+
+fn join_lines(xs: List[String]) -> String = list.join(xs, "\n")
+
+// Generic head/tail truncation. Tries to break on line boundaries to
+// avoid cutting mid-sentence; falls back to char-level if a single
+// line is itself too long.
+fn truncate_head_tail(s: String) -> String = {
+  let total = string.len(s)
+  if total <= HARD_CAP then "" + s
+  else {
+    let head_chars = (HARD_CAP * HEAD_RATIO) / 100
+    let tail_chars = (HARD_CAP * TAIL_RATIO) / 100
+    let head = string.take(s, head_chars)
+    let tail = string.take_end(s, tail_chars)
+    let elided_chars = total - head_chars - tail_chars
+    "${head}\n\n... <${int.to_string(elided_chars)} chars elided> ...\n\n${tail}"
+  }
+}
+
+// Collapse runs of identical-prefix lines (npm install / pip install
+// shape: hundreds of `+ pkg@x.y.z` or `Resolving dependencies...`).
+fn collapse_repetitive_lines(s: String) -> String = {
+  let lines = string.lines(s)
+  if list.len(lines) < 30 then "" + s
+  else {
+    // Build a list of (line, count) by collapsing consecutive lines
+    // that share the same first 8 chars.
+    let result = list.fold(lines, ([], "", 0), (acc, line) => {
+      let collected = acc.0
+      let prev_prefix = acc.1
+      let prev_count = acc.2
+      let prefix = string.take(line, 8)
+      if prefix == prev_prefix and prev_prefix != "" then
+        (collected, prev_prefix, prev_count + 1)
+      else {
+        let flushed = if prev_count > 3 then
+          collected + ["... <${int.to_string(prev_count - 1)} more lines like '${prev_prefix}*'>"]
+        else collected
+        (flushed + [line], prefix, 1)
+      }
+    })
+    let final_collected = result.0
+    let final_prefix = result.1
+    let final_count = result.2
+    let with_tail = if final_count > 3 then
+      final_collected + ["... <${int.to_string(final_count - 1)} more lines like '${final_prefix}*'>"]
+    else final_collected
+    join_lines(with_tail)
+  }
+}
+
+// git-status-aware compression. Format-preserving but counts at top.
+fn compress_git_status(s: String) -> String = {
+  let lines = list.filter(string.lines(s), (l) => l != "")
+  let n = list.len(lines)
+  if n <= 30 then "" + s
+  else {
+    let modified = list.filter(lines, (l) => string.starts_with(l, " M") or string.starts_with(l, "M "))
+    let untracked = list.filter(lines, (l) => string.starts_with(l, "??"))
+    let added = list.filter(lines, (l) => string.starts_with(l, "A ") or string.starts_with(l, "AM"))
+    let deleted = list.filter(lines, (l) => string.starts_with(l, " D") or string.starts_with(l, "D "))
+    let head = list.take(lines, 20)
+    let summary = "(git status: ${int.to_string(list.len(modified))} modified, ${int.to_string(list.len(untracked))} untracked, ${int.to_string(list.len(added))} added, ${int.to_string(list.len(deleted))} deleted; first 20 lines below)"
+    "${summary}\n\n${join_lines(head)}\n... <${int.to_string(n - 20)} more lines>"
+  }
+}
+
+fn looks_like_git_status(name: String, output: String) -> Bool = {
+  let is_bash = name == "Bash"
+  let has_untracked = string.contains(output, "??")
+  let has_modified = string.contains(output, " M ") and string.contains(output, "modified:")
+  is_bash and (has_untracked or has_modified)
+}
+
+fn looks_like_install(output: String) -> Bool = {
+  let has_keyword = string.contains(output, "npm install") or string.contains(output, "audited") or string.contains(output, "Resolving deltas")
+  has_keyword and line_count(output) > 30
+}
+
+// Public entry point used by tools.almd to filter every tool result
+// before it goes back into the LLM history.
+fn filter_output(tool_name: String, output: String) -> String = {
+  let total = string.len(output)
+  if total <= MAX_PASSTHROUGH then "" + output
+  else if looks_like_git_status(tool_name, output) then
+    compress_git_status(output)
+  else if looks_like_install(output) then
+    truncate_head_tail(collapse_repetitive_lines(output))
+  else
+    truncate_head_tail(output)
+}

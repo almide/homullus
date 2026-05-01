@@ -9,6 +9,8 @@ import fs
 import json
 import process
 
+import self.output_filter as out_filter
+
 fn definitions() -> List[ttools.Tool] = [
   ttools.tool("Read", "Read a UTF-8 text file and return its contents.",
     ttools.params([("path", ttools.param_string("Absolute file path to read"))], ["path"])),
@@ -87,7 +89,7 @@ effect fn run_grep(args: Value) -> Result[String, String] = {
   process.exec("grep", ["-rEn", "--", pattern, target])
 }
 
-effect fn dispatch(name: String, args: Value) -> Result[String, String] =
+effect fn dispatch_raw(name: String, args: Value) -> Result[String, String] =
   match name {
     "Read"  => run_read(args),
     "Write" => run_write(args),
@@ -96,4 +98,13 @@ effect fn dispatch(name: String, args: Value) -> Result[String, String] =
     "Glob"  => run_glob(args),
     "Grep"  => run_grep(args),
     _       => err("unknown tool: ${name}"),
+  }
+
+// Public dispatch — runs the tool and applies rtk-style output
+// filtering to the result before returning. Errors pass through
+// unchanged.
+effect fn dispatch(name: String, args: Value) -> Result[String, String] =
+  match dispatch_raw(name, args) {
+    err(e) => err(e)
+    ok(s)  => ok(out_filter.filter_output(name, s))
   }
