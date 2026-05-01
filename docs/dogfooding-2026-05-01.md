@@ -89,3 +89,47 @@ That's the same shape Claude Code uses; it's now demonstrated running entirely o
 | #4   | almai  | groq provider |
 
 Each was hit by writing real code, not synthetic tests. That's the dojo working as intended.
+
+## Round 2: recursive dogfood — homullus improving homullus
+
+After the basic dogfooding session above, the next test: **have homullus modify its own source**. The task was to add a `/version` slash command that prints `homullus v${VERSION}`.
+
+### Input
+
+```
+> Read /Users/o6lvl4/workspace/github.com/almide/homullus/src/main.almd. Then use Edit
+> to add a new slash command "/version" that prints the VERSION constant. Specifically,
+> find the line `    "exit" => none` and replace it with two lines: the same `"exit" => none`
+> followed by `    "version" => { io.print("homullus v${VERSION}\n") ; some(state) }`. Use a single Edit call.
+```
+
+### Tool calls homullus dispatched (via groq/llama-3.3-70b-versatile)
+
+```
+[Read] {"path":".../src/main.almd"}
+[1jpbtfpa6] // homullus — Modular AI agent CLI runtime, written in Almide ...
+
+[Edit] {
+  "old_string":"    \"exit\" => none",
+  "new_string":"    \"exit\" => none\n    \"version\" => { io.print(\"homullus v${VERSION}\\n\") ; some(state) }",
+  "path":".../src/main.almd"
+}
+[508yw729d] edited .../src/main.almd
+```
+
+### Verification
+
+```bash
+$ almide check src/main.almd
+No errors found
+
+$ printf "/version\n/exit\n" | MODEL=cli/claude almide run src/main.almd
+homullus v0.0.1
+model: cli/claude    trust: bypass    /help for commands
+> homullus v0.0.1
+> Bye!
+```
+
+The new slash command compiled and worked on first try. homullus successfully edited its own source via its own tool runtime, driven by an open-weights LLM with no human typing the diff.
+
+That's the milestone: **the agent built in Almide is good enough to extend itself, with feedback flowing back to the language and stdlib.** Each round of dogfood produces compiler PRs (8 so far) and homullus features (provider injection, scripted integration check, /version) — both improving in lockstep.

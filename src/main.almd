@@ -84,6 +84,7 @@ fn parse_slash(input: String) -> Option[(String, String)] =
 effect fn handle_slash(state: State, name: String, arg: String) -> Option[State] =
   match name {
     "exit" => none
+    "version" => { io.print("homullus v${VERSION}\n") ; some(state) }
     "help" => { cmd_help() ; some(state) }
     "tools" => { cmd_tools() ; some(state) }
     "clear" => {
