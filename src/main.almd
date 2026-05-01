@@ -31,7 +31,7 @@ type State = {
 
 let DEFAULT_MODEL = "openai/gpt-4o-mini"
 let DEFAULT_MODE  = "default"
-let VERSION       = "0.1.0"
+let VERSION       = "0.2.0"
 let DEFAULT_COMPACT_THRESHOLD_TOKENS = 80000
 
 effect fn read_compact_threshold() -> Int =
