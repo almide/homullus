@@ -62,6 +62,7 @@ effect fn cmd_help() -> Unit =
       /trust [mode]   Set permission mode (default | accept-edits | bypass)
       /clear          Clear conversation history
       /help           Show this help
+      /version        Show homullus version
       /exit           Exit homullus
     """ + "\n")
 
