@@ -181,3 +181,52 @@ The .almd files in the src directory are: agent_check.almd, agent.almd, main.alm
 Four tool rounds, three failures (sed delimiter conflict because the substitution pattern itself contained `/`), then recovery via `awk -F/` — driven entirely by the LLM with each Bash result fed back as `role:"tool"` and the agent loop continuing. The final summary streamed token-by-token. All in one REPL turn.
 
 That's structurally the same shape as a Claude Code session: streaming text, persistent multi-round tool dispatch, error-aware recovery. The only thing left to make the UX visually identical is text-rendering polish (the ANSI escape sequences in our log are unrendered because we piped to a non-TTY).
+
+## Round 4: streaming + recursive dogfood — homullus updates `/clear` to also reset usage
+
+After token-usage display landed in v0.1.0+1, `/clear` only wiped history and left the running token counter alone. Asked homullus (via groq + streaming) to fix it.
+
+### Input
+
+```
+> Read /Users/o6lvl4/workspace/github.com/almide/homullus/src/main.almd. Find the
+> line that says exactly `      some({ ...state, history: [] })` (with 6 spaces of
+> indent). Use the Edit tool to replace it with
+> `      some({ ...state, history: [], usage: agent.empty_usage() })` so that
+> /clear also resets the token usage counter. Use absolute path. Keep old_string
+> and new_string both as a single line each.
+```
+
+### Tool calls homullus dispatched
+
+```
+[Edit] {
+  "old_string":"      some({ ...state, history: [] })",
+  "new_string":"      some({ ...state, history: [], usage: agent.empty_usage() })",
+  "path":".../src/main.almd"
+}
+[edited]
+
+The line that says exactly `...history: [] })` has been replaced with `...usage: agent.empty_usage() })`.
+
+[in:1866 out:129 total:1995]
+```
+
+Final assistant text streamed live (the `[in:... out:... total:...]` line below the prompt is the running token counter — the 1.9k tokens are reasonable for the file payload + tool result). The Edit was first-try correct.
+
+### Verification
+
+```
+$ almide check src/main.almd
+No errors found
+
+$ printf "say hi\n/clear\nsay bye\n/exit\n" | homullus
+> Hi
+[in:791 out:2 total:793]
+> Conversation cleared.
+> bye
+[in:791 out:2 total:793]   ← still 793, not ~1586 — usage WAS reset
+> Bye!
+```
+
+Cumulative tokens after the second turn equal exactly the second-turn cost (793), proving `/clear` now zeros usage. **Streaming + recursive self-modification + immediate verification, all in one REPL session.** The same shape Claude Code achieves; demonstrated entirely on Almide.

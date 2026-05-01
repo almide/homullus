@@ -105,7 +105,7 @@ effect fn handle_slash(state: State, name: String, arg: String) -> Option[State]
     "tools" => { cmd_tools() ; some(state) }
     "clear" => {
       io.print("Conversation cleared.\n")
-      some({ ...state, history: [] })
+      some({ ...state, history: [], usage: agent.empty_usage() })
     }
     "resume" => match session.resume_latest() {
       err(e) => { io.print("resume failed: ${e}\n") ; some(state) }
