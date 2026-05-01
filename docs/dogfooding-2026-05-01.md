@@ -133,3 +133,51 @@ model: cli/claude    trust: bypass    /help for commands
 The new slash command compiled and worked on first try. homullus successfully edited its own source via its own tool runtime, driven by an open-weights LLM with no human typing the diff.
 
 That's the milestone: **the agent built in Almide is good enough to extend itself, with feedback flowing back to the language and stdlib.** Each round of dogfood produces compiler PRs (8 so far) and homullus features (provider injection, scripted integration check, /version) — both improving in lockstep.
+
+## Round 3: streaming + tool calls in one session
+
+Added live token streaming for OpenAI-shaped providers (PRs #236 in almide, #5 in almai). homullus's `streaming_provider` routes openai / openrouter / groq through `almai.call_streaming`, which delegates to the new `http.openai_streaming_call` intrinsic — Rust owns the SSE parsing + JSON accumulation + delta dispatch.
+
+### Live counting (streaming-only, no tool dispatch)
+
+```
+$ MODEL=groq/llama-3.3-70b-versatile homullus
+
+> count from 1 to 8 one number per line
+
+1
+2
+3
+4
+5
+6
+7
+8
+```
+
+Each digit and newline arrived as a separate SSE `data:` event. The numbers materialize one-by-one in the terminal rather than appearing as a block, exactly the way Claude Code feels.
+
+### Streaming + multi-round tool dispatch + error recovery
+
+```
+> ls .almd files in src using Bash, just the names
+
+[Bash] {"command":"ls /abs/src/*.almd | sed 's/.*///'"}
+[ERROR: sed: 1: "s/.*///": bad flag in substitute command: '/']
+[Bash] {"command":"find /abs/src/ -name '*.almd' -print | sed 's/.*///'"}
+[ERROR: sed: 1: "s/.*///": bad flag in substitute command: '/']
+[Bash] {"command":"find /abs/src/ -name '*.almd' | sed 's/.*///'"}
+[ERROR: sed: 1: "s/.*///": bad flag in substitute command: '/']
+[Bash] {"command":"ls /abs/src/*.almd | awk -F/ '{print $NF}'"}
+[agent_check.almd
+agent.almd
+main.almd
+permission.almd
+smoke.almd
+tools.almd]
+The .almd files in the src directory are: agent_check.almd, agent.almd, main.almd, permission.almd, smoke.almd, tools.almd
+```
+
+Four tool rounds, three failures (sed delimiter conflict because the substitution pattern itself contained `/`), then recovery via `awk -F/` — driven entirely by the LLM with each Bash result fed back as `role:"tool"` and the agent loop continuing. The final summary streamed token-by-token. All in one REPL turn.
+
+That's structurally the same shape as a Claude Code session: streaming text, persistent multi-round tool dispatch, error-aware recovery. The only thing left to make the UX visually identical is text-rendering polish (the ANSI escape sequences in our log are unrendered because we piped to a non-TTY).
