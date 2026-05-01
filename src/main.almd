@@ -62,7 +62,7 @@ effect fn cmd_help() -> Unit =
       /trust [mode]   Set permission mode (default | accept-edits | bypass)
       /clear          Clear conversation history
       /help           Show this help
-      /exit           Exit famulus
+      /exit           Exit homullus
     """ + "\n")
 
 effect fn cmd_tools() -> Unit = {
