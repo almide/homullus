@@ -39,6 +39,12 @@ fn definitions() -> List[ttools.Tool] = [
       ("pattern", ttools.param_string("Regex to search")),
       ("path",    ttools.param_string("Directory to search (default: cwd)")),
     ], ["pattern"])),
+
+  ttools.tool("Task", "Spawn a focused subtask worker. The worker runs in its own fresh history with no further tool access; it just returns its answer text. Use for: summarizing search results, generating boilerplate, classifying intent — anything that needs LLM reasoning but not file I/O.",
+    ttools.params([
+      ("description", ttools.param_string("One-line label of what the worker is doing (for the parent's log)")),
+      ("prompt",      ttools.param_string("The full user-message-style prompt the worker receives")),
+    ], ["description", "prompt"])),
 ]
 
 fn arg_string(args: Value, key: String) -> String =

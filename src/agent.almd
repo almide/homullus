@@ -93,7 +93,32 @@ fn make_tool_feedback(call: almai.ToolCall, output: String, is_error: Bool) -> a
   almai.tool_result(call.id, body)
 }
 
-effect fn execute_tool(mode: String, call: almai.ToolCall) -> Result[(String, Bool), String] = {
+// Run a focused worker. The worker has no tool access and no streaming
+// side-effects on the parent — it returns the assistant's final answer
+// text directly. Used by the Task tool.
+effect fn run_subtask(
+  caller: (String, List[almai.Message], almai.CallOptions) -> Result[almai.LLMResponse, String],
+  model: String,
+  description: String,
+  prompt: String,
+) -> Result[String, String] = {
+  println("\x1b[2m  ↪ subtask: ${description}\x1b[0m")
+  let opts = almai.defaults()
+    |> almai.with_max_tokens(2000)
+    |> almai.with_temperature(0.0)
+    |> almai.with_system("You are a focused subtask worker invoked by a coordinator agent. Answer the prompt concisely with your final result only — do not explain process. You have no tools.")
+  match caller(model, [almai.user(prompt)], opts) {
+    err(e) => err(e)
+    ok(r)  => ok(r.content)
+  }
+}
+
+effect fn execute_tool(
+  caller: (String, List[almai.Message], almai.CallOptions) -> Result[almai.LLMResponse, String],
+  model: String,
+  mode: String,
+  call: almai.ToolCall,
+) -> Result[(String, Bool), String] = {
   let args_json = call.arguments
   let allowed = perm.check(mode, call.name, args_json)
   if not allowed then
@@ -101,10 +126,18 @@ effect fn execute_tool(mode: String, call: almai.ToolCall) -> Result[(String, Bo
   else
     match json.parse(args_json) {
       err(e) => ok(("invalid tool arguments: ${e}", true))
-      ok(args) => match ftools.dispatch(call.name, args) {
-        ok(s)  => ok((s, false))
-        err(e) => ok((e, true))
-      }
+      ok(args) =>
+        if call.name == "Task" then {
+          let desc = json.get_string(args, "description") |> option.unwrap_or("(unnamed)")
+          let prompt = json.get_string(args, "prompt") |> option.unwrap_or("")
+          match run_subtask(caller, model, desc, prompt) {
+            err(e) => ok((e, true))
+            ok(s)  => ok((s, false))
+          }
+        } else match ftools.dispatch(call.name, args) {
+          ok(s)  => ok((s, false))
+          err(e) => ok((e, true))
+        }
     }
 }
 
@@ -123,6 +156,8 @@ effect fn print_tool_result(call: almai.ToolCall, output: String, is_error: Bool
 }
 
 effect fn process_calls(
+  caller: (String, List[almai.Message], almai.CallOptions) -> Result[almai.LLMResponse, String],
+  model: String,
   calls: List[almai.ToolCall],
   acc: List[almai.Message],
   mode: String,
@@ -131,12 +166,12 @@ effect fn process_calls(
     none => ok(acc)
     some(call) => {
       print_tool_call(call)
-      let exec = execute_tool(mode, call)!
+      let exec = execute_tool(caller, model, mode, call)!
       let output = exec.0
       let is_err = exec.1
       print_tool_result(call, output, is_err)
       let next = acc + [make_tool_feedback(call, output, is_err)]
-      process_calls(list.drop(calls, 1), next, mode)
+      process_calls(caller, model, list.drop(calls, 1), next, mode)
     }
   }
 
@@ -173,7 +208,7 @@ effect fn loop_round(
         if list.is_empty(r.tool_calls) then
           ok(TurnResult { history: with_assistant, usage: new_usage })
         else {
-          let next = process_calls(r.tool_calls, with_assistant, mode)!
+          let next = process_calls(call, model, r.tool_calls, with_assistant, mode)!
           loop_round(call, model, next, opts, mode, round + 1, new_usage)
         }
       }
