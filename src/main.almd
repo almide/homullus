@@ -124,12 +124,13 @@ effect fn repl(state: State) -> Unit = {
       }
       none => {
         let next_history = agent.run_turn(
+          (m, ms, op) => agent.default_provider(m, ms, op),
           state.model,
           state.history,
           state.system_prompt,
           state.mode,
           input,
-        )
+        )!
         io.print("\n")
         repl({ ...state, history: next_history })
       }

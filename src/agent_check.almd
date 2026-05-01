@@ -1,0 +1,208 @@
+// agent_check — drive agent.run_turn with scripted LLMs and verify the
+// resulting message history. No API keys needed; deterministic.
+//
+// Run: `almide run src/agent_check.almd`
+// Exits 0 on all pass, 1 on any failure.
+
+import almai
+import fs
+import process
+
+import self.agent as agent
+
+// ── Scripted providers ──
+
+effect fn read_tool_provider(
+  model: String,
+  msgs: List[almai.Message],
+  opts: almai.CallOptions,
+) -> Result[almai.LLMResponse, String] = {
+  let tool_count = list.filter(msgs, (m) => m.role == "tool") |> list.len
+  let usage = Usage { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+  if tool_count == 0 then
+    ok(LLMResponse {
+      content: "Let me check that file.",
+      model: "scripted",
+      usage: usage,
+      finish_reason: "tool_use",
+      tool_calls: [ToolCall {
+        id: "call_read_1",
+        name: "Read",
+        arguments: "{\"path\":\"/tmp/homullus_agent_check.txt\"}",
+      }],
+    })
+  else
+    ok(LLMResponse {
+      content: "The file said hi.",
+      model: "scripted",
+      usage: usage,
+      finish_reason: "stop",
+      tool_calls: [],
+    })
+}
+
+effect fn plain_text_provider(
+  model: String,
+  msgs: List[almai.Message],
+  opts: almai.CallOptions,
+) -> Result[almai.LLMResponse, String] =
+  ok(LLMResponse {
+    content: "ok",
+    model: "scripted",
+    usage: Usage { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    finish_reason: "stop",
+    tool_calls: [],
+  })
+
+effect fn error_provider(
+  model: String,
+  msgs: List[almai.Message],
+  opts: almai.CallOptions,
+) -> Result[almai.LLMResponse, String] =
+  err("upstream blew up")
+
+effect fn multi_round_provider(
+  model: String,
+  msgs: List[almai.Message],
+  opts: almai.CallOptions,
+) -> Result[almai.LLMResponse, String] = {
+  let tool_count = list.filter(msgs, (m) => m.role == "tool") |> list.len
+  let usage = Usage { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+  match tool_count {
+    0 => ok(LLMResponse {
+      content: "first I'll Read",
+      model: "scripted", usage: usage, finish_reason: "tool_use",
+      tool_calls: [ToolCall { id: "c1", name: "Read",
+        arguments: "{\"path\":\"/tmp/homullus_agent_check.txt\"}" }],
+    })
+    1 => ok(LLMResponse {
+      content: "now I'll Glob",
+      model: "scripted", usage: usage, finish_reason: "tool_use",
+      tool_calls: [ToolCall { id: "c2", name: "Glob",
+        arguments: "{\"pattern\":\"/tmp/homullus_agent_check.*\"}" }],
+    })
+    _ => ok(LLMResponse {
+      content: "done",
+      model: "scripted", usage: usage, finish_reason: "stop",
+      tool_calls: [],
+    })
+  }
+}
+
+// ── Tiny test runner ──
+//
+// fail-fast: any failed check prints and exits 1. Output up to the
+// failure shows what passed.
+
+effect fn check(label: String, cond: Bool) -> Unit =
+  if cond then println("  \x1b[32m✓\x1b[0m ${label}")
+  else {
+    println("  \x1b[31m✗\x1b[0m ${label}")
+    process.exit(1)
+  }
+
+effect fn ensure_test_file() -> Unit = {
+  match fs.write("/tmp/homullus_agent_check.txt", "hi from disk") {
+    err(e) => println("  setup failed: ${e}")
+    ok(_) => ()
+  }
+}
+
+// ── Test cases ──
+
+effect fn test_tool_roundtrip() -> Unit = {
+  println("test: tool roundtrip (user → assistant tool_use → tool → assistant)")
+  ensure_test_file()
+  let history: List[almai.Message] = []
+  let next = agent.run_turn(
+    (m, ms, op) => read_tool_provider(m, ms, op),
+    "scripted", history, "system prompt", "bypass",
+    "what's in /tmp/homullus_agent_check.txt?",
+  )!
+  check("history has 4 messages", list.len(next) == 4)
+  let m0 = list.get(next, 0) |> option.unwrap_or(almai.user(""))
+  check("m0 role=user", m0.role == "user")
+  let m1 = list.get(next, 1) |> option.unwrap_or(almai.user(""))
+  check("m1 role=assistant", m1.role == "assistant")
+  check("m1 has 1 tool_call", list.len(m1.tool_calls) == 1)
+  let tc = list.first(m1.tool_calls) |> option.unwrap_or(ToolCall { id: "", name: "", arguments: "" })
+  check("m1 tool_call name=Read", tc.name == "Read")
+  check("m1 tool_call id=call_read_1", tc.id == "call_read_1")
+  let m2 = list.get(next, 2) |> option.unwrap_or(almai.user(""))
+  check("m2 role=tool", m2.role == "tool")
+  check("m2 tool_call_id=call_read_1", m2.tool_call_id == "call_read_1")
+  check("m2 content carries file body", string.contains(m2.content, "hi from disk"))
+  let m3 = list.get(next, 3) |> option.unwrap_or(almai.user(""))
+  check("m3 role=assistant", m3.role == "assistant")
+  check("m3 final text", m3.content == "The file said hi.")
+}
+
+effect fn test_no_tool_calls() -> Unit = {
+  println("test: no tool calls → 1 round")
+  let next = agent.run_turn(
+    (m, ms, op) => plain_text_provider(m, ms, op),
+    "scripted", [], "sys", "default", "ping",
+  )!
+  check("history has 2 messages", list.len(next) == 2)
+  let last = list.last(next) |> option.unwrap_or(almai.user(""))
+  check("last is assistant", last.role == "assistant")
+  check("last content", last.content == "ok")
+}
+
+effect fn test_provider_error() -> Unit = {
+  println("test: provider error stops the loop")
+  let next = agent.run_turn(
+    (m, ms, op) => error_provider(m, ms, op),
+    "scripted", [], "sys", "default", "anything",
+  )!
+  check("history only contains user message", list.len(next) == 1)
+  let only = list.first(next) |> option.unwrap_or(almai.user(""))
+  check("only message is user", only.role == "user")
+}
+
+effect fn test_history_threading() -> Unit = {
+  println("test: history threading across turns")
+  let prior: List[almai.Message] = [
+    almai.user("first turn input"),
+    almai.assistant("first turn output"),
+  ]
+  let next = agent.run_turn(
+    (m, ms, op) => plain_text_provider(m, ms, op),
+    "scripted", prior, "sys", "default", "second turn input",
+  )!
+  check("history len = 4 (prior 2 + new user + new assistant)", list.len(next) == 4)
+  let m0 = list.get(next, 0) |> option.unwrap_or(almai.user(""))
+  check("first prior message preserved", m0.content == "first turn input")
+  let m2 = list.get(next, 2) |> option.unwrap_or(almai.user(""))
+  check("third message is new user input", m2.content == "second turn input")
+}
+
+effect fn test_multi_round_tool_loop() -> Unit = {
+  println("test: multi-round tool loop (Read → Glob → text)")
+  ensure_test_file()
+  let next = agent.run_turn(
+    (m, ms, op) => multi_round_provider(m, ms, op),
+    "scripted", [], "sys", "bypass",
+    "do two tools",
+  )!
+  // Expected: user, assistant(Read), tool, assistant(Glob), tool, assistant(text)
+  check("history has 6 messages", list.len(next) == 6)
+  let m1 = list.get(next, 1) |> option.unwrap_or(almai.user(""))
+  let tc1 = list.first(m1.tool_calls) |> option.unwrap_or(ToolCall { id: "", name: "", arguments: "" })
+  check("round1 tool=Read", tc1.name == "Read")
+  let m3 = list.get(next, 3) |> option.unwrap_or(almai.user(""))
+  let tc2 = list.first(m3.tool_calls) |> option.unwrap_or(ToolCall { id: "", name: "", arguments: "" })
+  check("round2 tool=Glob", tc2.name == "Glob")
+  let m5 = list.last(next) |> option.unwrap_or(almai.user(""))
+  check("final assistant text", m5.content == "done")
+}
+
+effect fn main() -> Unit = {
+  println("\n=== homullus agent integration check ===\n")
+  test_tool_roundtrip()
+  test_no_tool_calls()
+  test_provider_error()
+  test_history_threading()
+  test_multi_round_tool_loop()
+  println("\n=== all checks passed ===")
+}
