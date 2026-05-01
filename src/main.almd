@@ -18,6 +18,7 @@ import io
 import self.agent as agent
 import self.tools as ftools
 import self.permission as perm
+import self.context as homu_context
 
 type State = {
   model: String,
@@ -36,7 +37,7 @@ let VERSION       = "0.1.0"
 effect fn build_system_prompt() -> String = {
   let cwd = env.cwd() |> result.unwrap_or("(unknown)")
   let os_name = env.os()
-  """
+  let base = """
   You are homullus, a precise CLI coding agent.
 
   Environment:
@@ -51,6 +52,7 @@ effect fn build_system_prompt() -> String = {
   - Be concise. Prefer doing the task over describing it.
   - When you finish a task, stop calling tools and answer in plain text.
   """
+  base + homu_context.build()
 }
 
 // ── Slash commands ──

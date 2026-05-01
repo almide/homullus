@@ -1,0 +1,57 @@
+// context — assemble project-aware system prompt extras.
+//
+// Two sources, both optional:
+//   - CLAUDE.md (or HOMULLUS.md) at the working directory root —
+//     project conventions / coding style the user wants the agent to
+//     follow without re-stating each turn.
+//   - `git status --short` (run via /bin/sh -c) — gives the agent a
+//     low-friction view of the repo's current state without it having
+//     to spend a Bash tool call to discover it.
+//
+// Each section is fenced with a heading so the LLM can distinguish
+// them from other prompt material. Both are skipped silently when
+// the source isn't available.
+
+import fs
+import process
+
+let MAX_GIT_STATUS_LINES = 60
+
+effect fn read_claude_md() -> String = {
+  let candidates = ["CLAUDE.md", "HOMULLUS.md"]
+  let found = list.fold(candidates, "", (acc, name) =>
+    if acc != "" then acc
+    else match fs.read_text(name) {
+      err(_) => ""
+      ok(text) => text
+    })
+  if found == "" then ""
+  else "## Project conventions (from CLAUDE.md)\n\n${string.trim(found)}"
+}
+
+effect fn read_git_status() -> String = {
+  match process.exec("/bin/sh", ["-c", "git rev-parse --is-inside-work-tree >/dev/null 2>&1 && git status --short && echo '---' && git rev-parse --abbrev-ref HEAD"]) {
+    err(_) => ""
+    ok(raw) => {
+      let trimmed = string.trim(raw)
+      if trimmed == "" then ""
+      else {
+        let lines = string.lines(trimmed)
+        let limited = if list.len(lines) > MAX_GIT_STATUS_LINES then
+          (list.take(lines, MAX_GIT_STATUS_LINES) |> list.join("\n")) + "\n... (truncated)"
+        else trimmed
+        "## Current git state\n\n```\n${limited}\n```"
+      }
+    }
+  }
+}
+
+// Compose both sources into one block. Empty when neither is present —
+// the caller can append unconditionally.
+effect fn build() -> String = {
+  let claude = read_claude_md()
+  let git = read_git_status()
+  let parts = list.filter([claude, git], (s) => s != "")
+  if list.is_empty(parts) then ""
+  else "\n\n" + list.join(parts, "\n\n")
+}
