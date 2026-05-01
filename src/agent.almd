@@ -22,10 +22,38 @@ import self.permission as perm
 
 let MAX_TOOL_ROUNDS = 12
 
+// Mirror of almai.Usage so we can construct it locally (almide
+// disallows qualified-name record construction `almai.Usage { ... }`).
+// Structurally identical → assignable to/from almai.Usage.
+type Usage = {
+  prompt_tokens: Int,
+  completion_tokens: Int,
+  total_tokens: Int,
+}
+
+// What a single REPL turn produces back to the caller: the updated
+// conversation history plus the cumulative token usage from every LLM
+// call that fired during the turn (a tool-using turn will have several).
+type TurnResult = {
+  history: List[almai.Message],
+  usage: Usage,
+}
+
+fn empty_usage() -> Usage =
+  Usage { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+
+fn add_usage(a: Usage, b: Usage) -> Usage =
+  Usage {
+    prompt_tokens: a.prompt_tokens + b.prompt_tokens,
+    completion_tokens: a.completion_tokens + b.completion_tokens,
+    total_tokens: a.total_tokens + b.total_tokens,
+  }
+
 fn supports_streaming(model: String) -> Bool =
   string.starts_with(model, "openai/") or
   string.starts_with(model, "openrouter/") or
-  string.starts_with(model, "groq/")
+  string.starts_with(model, "groq/") or
+  string.starts_with(model, "anthropic/")
 
 // Production provider. Streams text deltas to stdout for the
 // OpenAI-shaped providers; for the rest, runs `call_retry` and prints
@@ -118,31 +146,34 @@ effect fn loop_round(
   opts: almai.CallOptions,
   mode: String,
   round: Int,
-) -> Result[List[almai.Message], String] =
+  usage_so_far: Usage,
+) -> Result[TurnResult, String] =
   if round >= MAX_TOOL_ROUNDS then {
     println("\x1b[31m[agent] max tool rounds reached (${int.to_string(MAX_TOOL_ROUNDS)}); stopping\x1b[0m")
-    ok(msgs)
+    ok(TurnResult { history: msgs, usage: usage_so_far })
   } else
     match call(model, msgs, opts) {
       err(e) => {
         println("\x1b[31mError: ${e}\x1b[0m")
-        ok(msgs)
+        ok(TurnResult { history: msgs, usage: usage_so_far })
       }
       ok(r) => {
         // Provider has already printed (streamed deltas or one-shot
         // for non-streamers). Add a trailing newline so the next REPL
         // event isn't glued to the assistant's last line.
         if r.content != "" then println("") else ()
+        let new_usage = add_usage(usage_so_far, r.usage)
         // Preserve tool_calls on the assistant message so the next turn
         // sees a proper tool_use → tool_result roundtrip.
         let with_assistant = if list.is_empty(r.tool_calls) then
           msgs + [almai.assistant(r.content)]
         else
           msgs + [almai.assistant_with_tools(r.content, r.tool_calls)]
-        if list.is_empty(r.tool_calls) then ok(with_assistant)
+        if list.is_empty(r.tool_calls) then
+          ok(TurnResult { history: with_assistant, usage: new_usage })
         else {
           let next = process_calls(r.tool_calls, with_assistant, mode)!
-          loop_round(call, model, next, opts, mode, round + 1)
+          loop_round(call, model, next, opts, mode, round + 1, new_usage)
         }
       }
     }
@@ -154,11 +185,11 @@ effect fn run_turn(
   system_prompt: String,
   mode: String,
   input: String,
-) -> Result[List[almai.Message], String] = {
+) -> Result[TurnResult, String] = {
   let with_user = history + [almai.user(input)]
   let opts = almai.defaults()
     |> almai.with_max_tokens(8192)
     |> almai.with_system(system_prompt)
     |> almai.with_tools(ftools.definitions())
-  loop_round(call, model, with_user, opts, mode, 0)
+  loop_round(call, model, with_user, opts, mode, 0, empty_usage())
 }

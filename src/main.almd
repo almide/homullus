@@ -24,11 +24,12 @@ type State = {
   mode: String,
   history: List[almai.Message],
   system_prompt: String,
+  usage: agent.Usage,
 }
 
 let DEFAULT_MODEL = "openai/gpt-4o-mini"
 let DEFAULT_MODE  = "default"
-let VERSION       = "0.0.1"
+let VERSION       = "0.1.0"
 
 // ── System prompt ──
 
@@ -113,8 +114,16 @@ effect fn handle_slash(state: State, name: String, arg: String) -> Option[State]
 
 // ── REPL ──
 
-effect fn repl(state: State) -> Unit = {
+effect fn print_prompt(state: State) -> Unit = {
+  let u = state.usage
+  if u.total_tokens > 0 then
+    io.print("\x1b[2m[in:${int.to_string(u.prompt_tokens)} out:${int.to_string(u.completion_tokens)} total:${int.to_string(u.total_tokens)}]\x1b[0m\n")
+  else ()
   io.print("\x1b[1m> \x1b[0m")
+}
+
+effect fn repl(state: State) -> Unit = {
+  print_prompt(state)
   let raw = io.read_line()
   let input = string.trim(raw)
   if input == "" then repl(state)
@@ -125,7 +134,7 @@ effect fn repl(state: State) -> Unit = {
         some(next) => repl(next)
       }
       none => {
-        let next_history = agent.run_turn(
+        let result = agent.run_turn(
           (m, ms, op) => agent.streaming_provider(m, ms, op),
           state.model,
           state.history,
@@ -134,7 +143,7 @@ effect fn repl(state: State) -> Unit = {
           input,
         )!
         io.print("\n")
-        repl({ ...state, history: next_history })
+        repl({ ...state, history: result.history, usage: agent.add_usage(state.usage, result.usage) })
       }
     }
 }
@@ -151,5 +160,6 @@ effect fn main() -> Unit = {
     mode: mode,
     history: [],
     system_prompt: build_system_prompt(),
+    usage: agent.empty_usage(),
   })
 }
