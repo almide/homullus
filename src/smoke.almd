@@ -1,0 +1,35 @@
+// smoke — non-interactive end-to-end check
+//
+// One LLM round-trip with the configured provider/model, no REPL,
+// no tools. Useful for CI / first-time verification.
+//
+// Usage:
+//   set -a; source .env; set +a
+//   MODEL=cf/@cf/meta/llama-3.3-70b-instruct-fp8-fast \
+//     almide run src/smoke.almd
+
+import almai
+import env
+import process
+
+let DEFAULT_MODEL = "cf/@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+
+effect fn main() -> Unit = {
+  let model = env.get("MODEL") |> option.unwrap_or(DEFAULT_MODEL)
+  let prompt = env.get("PROMPT") |> option.unwrap_or("Say 'pong' and nothing else.")
+  println("[smoke] model=${model}")
+  println("[smoke] prompt=${prompt}")
+  match almai.call(model, [
+    almai.system("You are a terse assistant."),
+    almai.user(prompt),
+  ]) {
+    err(e) => {
+      println("[smoke] FAIL: ${e}")
+      process.exit(1)
+    }
+    ok(r) => {
+      println("[smoke] response: ${r.content}")
+      println("[smoke] OK")
+    }
+  }
+}

@@ -62,7 +62,8 @@ effect fn cmd_help() -> Unit =
       /trust [mode]   Set permission mode (default | accept-edits | bypass)
       /clear          Clear conversation history
       /help           Show this help
-      /exit           Exit famulus
+      /version        Show homullus version
+      /exit           Exit homullus
     """ + "\n")
 
 effect fn cmd_tools() -> Unit = {
@@ -84,6 +85,7 @@ fn parse_slash(input: String) -> Option[(String, String)] =
 effect fn handle_slash(state: State, name: String, arg: String) -> Option[State] =
   match name {
     "exit" => none
+    "version" => { io.print("homullus v${VERSION}\n") ; some(state) }
     "help" => { cmd_help() ; some(state) }
     "tools" => { cmd_tools() ; some(state) }
     "clear" => {
@@ -124,12 +126,13 @@ effect fn repl(state: State) -> Unit = {
       }
       none => {
         let next_history = agent.run_turn(
+          (m, ms, op) => agent.default_provider(m, ms, op),
           state.model,
           state.history,
           state.system_prompt,
           state.mode,
           input,
-        )
+        )!
         io.print("\n")
         repl({ ...state, history: next_history })
       }
