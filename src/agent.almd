@@ -13,13 +13,12 @@ import self.permission as perm
 
 let MAX_TOOL_ROUNDS = 12
 
-// Build a tool-result feedback message. Embeds tool name + call id
-// so the model can correlate. We use role:"user" rather than role:"tool"
-// because almai's wire format only carries role+content; bare role:"tool"
-// without tool_call_id is rejected by strict providers (e.g. OpenAI Chat).
+// Native tool roundtrip: feed the tool result back as role:"tool" with
+// the call id, so providers (OpenAI / Anthropic) correlate it with the
+// assistant's tool_use block.
 fn make_tool_feedback(call: almai.ToolCall, output: String, is_error: Bool) -> almai.Message = {
-  let prefix = if is_error then "[Tool ${call.name} ERROR]" else "[Tool ${call.name} result]"
-  almai.user("${prefix} (id=${call.id})\n${output}")
+  let body = if is_error then "ERROR: ${output}" else output
+  almai.tool_result(call.id, body)
 }
 
 effect fn execute_tool(mode: String, call: almai.ToolCall) -> (String, Bool) = {
@@ -86,7 +85,12 @@ effect fn loop_round(
       }
       ok(r) => {
         print_text(r.content)
-        let with_assistant = msgs + [almai.assistant(r.content)]
+        // Preserve tool_calls on the assistant message so the next turn
+        // sees a proper tool_use → tool_result roundtrip.
+        let with_assistant = if list.is_empty(r.tool_calls) then
+          msgs + [almai.assistant(r.content)]
+        else
+          msgs + [almai.assistant_with_tools(r.content, r.tool_calls)]
         if list.is_empty(r.tool_calls) then with_assistant
         else {
           let next = process_calls(r.tool_calls, with_assistant, mode)

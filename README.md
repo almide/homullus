@@ -15,7 +15,7 @@ model: openai/gpt-4o-mini    trust: default    /help for commands
 
 > show me almide.toml
 [Read] {"path":"/abs/almide.toml"}
-[Tool Read result] [package]
+[call_abc] [package]
 name = "homullus"
 ...
 
@@ -40,7 +40,8 @@ It is also a deliberate alternative to [Aid-On/famulus](https://github.com/Aid-O
 - **3 permission modes** — `default` (read auto, others ask) · `accept-edits` (read+write auto) · `bypass` (everything auto)
 - **Dangerous-pattern detection** for Bash (`rm -rf`, `curl | sh`, `mkfs`, fork bombs) — confirmed even in `bypass`
 - **Retry with exponential backoff** on 429/5xx (via `almai.call_retry`)
-- **Tool roundtrip** with per-call id correlation
+- **Native tool roundtrip** — `assistant.tool_calls` ↔ `role:"tool"` with `tool_call_id`, working across every almai-supported provider that exposes tool calls
+- **Smoke test** — `almide run src/smoke.almd` round-trips a real LLM call without a REPL
 
 ## Layout
 
@@ -51,7 +52,8 @@ homullus/
 │   ├── main.almd        REPL, slash commands, state threading
 │   ├── agent.almd       single-turn query + tool loop
 │   ├── tools.almd       Bash/Read/Write/Edit/Glob/Grep dispatch
-│   └── permission.almd  3-mode resolver + dangerous patterns
+│   ├── permission.almd  3-mode resolver + dangerous patterns
+│   └── smoke.almd       non-interactive end-to-end check
 └── README.md
 ```
 
@@ -88,16 +90,9 @@ homu
 
 Environment overrides at startup: `MODEL`, `HOMU_TRUST`.
 
-## Tool roundtrip note
-
-OpenAI's strict roundtrip (`assistant.tool_calls` ↔ `role:"tool"` with `tool_call_id`) requires almai to carry `tool_call_id` through its message wire format. Currently almai serializes `role` and `content` only.
-
-For `homullus(1)`, tool results are fed back as `role:"user"` messages tagged with the tool name and call id — works across every provider almai supports today, at the cost of slightly looser correlation. A follow-up will upstream proper roundtrip support to almai.
-
 ## Roadmap
 
 - Streaming text deltas (waiting on almai)
-- Native tool roundtrip (almai upgrade)
 - Auto-compact (token estimation + LLM summary)
 - Output filtering (rtk-style) for `git status` / `npm install` / test output
 - Session persistence (serialize/restore JSON)
