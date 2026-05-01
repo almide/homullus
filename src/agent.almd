@@ -19,6 +19,7 @@ import json
 
 import self.tools as ftools
 import self.permission as perm
+import self.compact as compactor
 
 let MAX_TOOL_ROUNDS = 12
 
@@ -185,11 +186,14 @@ effect fn run_turn(
   system_prompt: String,
   mode: String,
   input: String,
+  compact_threshold: Int,
 ) -> Result[TurnResult, String] = {
   let with_user = history + [almai.user(input)]
+  // Auto-compact ahead of the LLM call so we never blow the context limit.
+  let compacted = compactor.compact(call, model, with_user, compact_threshold)!
   let opts = almai.defaults()
     |> almai.with_max_tokens(8192)
     |> almai.with_system(system_prompt)
     |> almai.with_tools(ftools.definitions())
-  loop_round(call, model, with_user, opts, mode, 0, empty_usage())
+  loop_round(call, model, compacted, opts, mode, 0, empty_usage())
 }

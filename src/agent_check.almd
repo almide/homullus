@@ -118,6 +118,7 @@ effect fn test_tool_roundtrip() -> Unit = {
     (m, ms, op) => read_tool_provider(m, ms, op),
     "scripted", history, "system prompt", "bypass",
     "what's in /tmp/homullus_agent_check.txt?",
+    99999999,
   )!.history
   check("history has 4 messages", list.len(next) == 4)
   let m0 = list.get(next, 0) |> option.unwrap_or(almai.user(""))
@@ -142,6 +143,7 @@ effect fn test_no_tool_calls() -> Unit = {
   let next = agent.run_turn(
     (m, ms, op) => plain_text_provider(m, ms, op),
     "scripted", [], "sys", "default", "ping",
+    99999999,
   )!.history
   check("history has 2 messages", list.len(next) == 2)
   let last = list.last(next) |> option.unwrap_or(almai.user(""))
@@ -154,6 +156,7 @@ effect fn test_provider_error() -> Unit = {
   let next = agent.run_turn(
     (m, ms, op) => error_provider(m, ms, op),
     "scripted", [], "sys", "default", "anything",
+    99999999,
   )!.history
   check("history only contains user message", list.len(next) == 1)
   let only = list.first(next) |> option.unwrap_or(almai.user(""))
@@ -169,6 +172,7 @@ effect fn test_history_threading() -> Unit = {
   let next = agent.run_turn(
     (m, ms, op) => plain_text_provider(m, ms, op),
     "scripted", prior, "sys", "default", "second turn input",
+    99999999,
   )!.history
   check("history len = 4 (prior 2 + new user + new assistant)", list.len(next) == 4)
   let m0 = list.get(next, 0) |> option.unwrap_or(almai.user(""))
@@ -184,6 +188,7 @@ effect fn test_multi_round_tool_loop() -> Unit = {
     (m, ms, op) => multi_round_provider(m, ms, op),
     "scripted", [], "sys", "bypass",
     "do two tools",
+    99999999,
   )!.history
   // Expected: user, assistant(Read), tool, assistant(Glob), tool, assistant(text)
   check("history has 6 messages", list.len(next) == 6)

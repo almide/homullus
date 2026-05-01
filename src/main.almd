@@ -18,6 +18,8 @@ import io
 import self.agent as agent
 import self.tools as ftools
 import self.permission as perm
+import self.context as homu_context
+import self.session as session
 
 type State = {
   model: String,
@@ -29,14 +31,24 @@ type State = {
 
 let DEFAULT_MODEL = "openai/gpt-4o-mini"
 let DEFAULT_MODE  = "default"
-let VERSION       = "0.1.0"
+let VERSION       = "0.2.0"
+let DEFAULT_COMPACT_THRESHOLD_TOKENS = 80000
+
+effect fn read_compact_threshold() -> Int =
+  match env.get("HOMU_COMPACT_THRESHOLD") {
+    none => DEFAULT_COMPACT_THRESHOLD_TOKENS
+    some(v) => match int.parse(v) {
+      ok(n) => n
+      err(_) => DEFAULT_COMPACT_THRESHOLD_TOKENS
+    }
+  }
 
 // ── System prompt ──
 
 effect fn build_system_prompt() -> String = {
   let cwd = env.cwd() |> result.unwrap_or("(unknown)")
   let os_name = env.os()
-  """
+  let base = """
   You are homullus, a precise CLI coding agent.
 
   Environment:
@@ -51,6 +63,7 @@ effect fn build_system_prompt() -> String = {
   - Be concise. Prefer doing the task over describing it.
   - When you finish a task, stop calling tools and answer in plain text.
   """
+  base + homu_context.build()
 }
 
 // ── Slash commands ──
@@ -62,6 +75,7 @@ effect fn cmd_help() -> Unit =
       /tools          List available tools
       /trust [mode]   Set permission mode (default | accept-edits | bypass)
       /clear          Clear conversation history
+      /resume         Resume the most recently saved session
       /help           Show this help
       /version        Show homullus version
       /exit           Exit homullus
@@ -91,7 +105,18 @@ effect fn handle_slash(state: State, name: String, arg: String) -> Option[State]
     "tools" => { cmd_tools() ; some(state) }
     "clear" => {
       io.print("Conversation cleared.\n")
-      some({ ...state, history: [] })
+      some({ ...state, history: [], usage: agent.empty_usage() })
+    }
+    "resume" => match session.resume_latest() {
+      err(e) => { io.print("resume failed: ${e}\n") ; some(state) }
+      ok(prior) =>
+        if list.is_empty(prior) then {
+          io.print("No saved session to resume.\n")
+          some(state)
+        } else {
+          io.print("Resumed session with ${int.to_string(list.len(prior))} messages.\n")
+          some({ ...state, history: prior })
+        }
     }
     "model" =>
       if arg == "" then {
@@ -134,6 +159,7 @@ effect fn repl(state: State) -> Unit = {
         some(next) => repl(next)
       }
       none => {
+        let threshold = read_compact_threshold()
         let result = agent.run_turn(
           (m, ms, op) => agent.streaming_provider(m, ms, op),
           state.model,
@@ -141,7 +167,13 @@ effect fn repl(state: State) -> Unit = {
           state.system_prompt,
           state.mode,
           input,
+          threshold,
         )!
+        // Best-effort save; don't error out the REPL on disk failure.
+        match session.save(result.history) {
+          err(_) => ()
+          ok(_) => ()
+        }
         io.print("\n")
         repl({ ...state, history: result.history, usage: agent.add_usage(state.usage, result.usage) })
       }
