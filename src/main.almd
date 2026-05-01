@@ -31,6 +31,16 @@ type State = {
 let DEFAULT_MODEL = "openai/gpt-4o-mini"
 let DEFAULT_MODE  = "default"
 let VERSION       = "0.1.0"
+let DEFAULT_COMPACT_THRESHOLD_TOKENS = 80000
+
+effect fn read_compact_threshold() -> Int =
+  match env.get("HOMU_COMPACT_THRESHOLD") {
+    none => DEFAULT_COMPACT_THRESHOLD_TOKENS
+    some(v) => match int.parse(v) {
+      ok(n) => n
+      err(_) => DEFAULT_COMPACT_THRESHOLD_TOKENS
+    }
+  }
 
 // ── System prompt ──
 
@@ -143,6 +153,7 @@ effect fn repl(state: State) -> Unit = {
           state.system_prompt,
           state.mode,
           input,
+          read_compact_threshold(),
         )!
         io.print("\n")
         repl({ ...state, history: result.history, usage: agent.add_usage(state.usage, result.usage) })

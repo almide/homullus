@@ -1,0 +1,81 @@
+// compact — auto-summarize history when it gets too long.
+//
+// Token estimation is intentionally crude (1 token ≈ 4 chars) — a few
+// percent off doesn't matter when the threshold is in tens-of-thousands
+// of tokens and the action is "ask the LLM to summarize and start over."
+// Cheap to recompute every turn so we don't carry a separate accumulator.
+//
+// Compaction strategy:
+// 1. Build a summarization prompt from the existing history (excluding
+//    the last user message — that's the active turn the agent is mid-
+//    way through).
+// 2. Run a non-tool LLM call to produce the summary.
+// 3. Replace the history with one synthetic system-recap user message
+//    plus the active user message.
+//
+// The last user input survives so the agent can finish answering it
+// using the recap as context.
+
+import almai
+
+let DEFAULT_THRESHOLD_TOKENS = 80000
+
+fn rough_token_count(msgs: List[almai.Message]) -> Int = {
+  let chars = list.fold(msgs, 0, (acc, m) => acc + string.len(m.content))
+  chars / 4
+}
+
+fn should_compact(msgs: List[almai.Message], threshold: Int) -> Bool =
+  rough_token_count(msgs) > threshold
+
+fn last_user_msg(msgs: List[almai.Message]) -> Option[almai.Message] = {
+  let users = list.filter(msgs, (m) => m.role == "user")
+  list.last(users)
+}
+
+fn render_history_for_summary(msgs: List[almai.Message]) -> String = {
+  let labelled = list.map(msgs, (m) => match m.role {
+    "system" => ""  // already known to the model
+    "user" => "USER:\n${m.content}"
+    "assistant" => "ASSISTANT:\n${m.content}"
+    "tool" => "TOOL_RESULT(id=${m.tool_call_id}):\n${m.content}"
+    _ => "${m.role}: ${m.content}"
+  })
+  let nonempty = list.filter(labelled, (s) => s != "")
+  list.join(nonempty, "\n\n")
+}
+
+// Replace history with a single synthetic user message that recaps
+// what came before, followed by the active user message.
+effect fn compact(
+  call: (String, List[almai.Message], almai.CallOptions) -> Result[almai.LLMResponse, String],
+  model: String,
+  history: List[almai.Message],
+  threshold: Int,
+) -> Result[List[almai.Message], String] = {
+  if not should_compact(history, threshold) then ok(history)
+  else {
+    // Drop the trailing user message (the active turn) and summarize the rest.
+    let trailing_user = last_user_msg(history)
+    let history_to_summarize = match trailing_user {
+      none => history
+      some(u) => list.filter(history, (m) => not (m.role == u.role and m.content == u.content))
+    }
+    let body = render_history_for_summary(history_to_summarize)
+    let prompt = "The following is a long conversation between a user and a coding agent. Produce a concise factual summary that preserves: the user's overall objective, files touched, decisions made, outstanding work. Aim for under 600 words.\n\n---\n${body}\n---"
+    let summary_opts = almai.defaults() |> almai.with_max_tokens(2000) |> almai.with_temperature(0.0)
+    println("\x1b[2m[compacting history (${int.to_string(rough_token_count(history))} tokens)...]\x1b[0m")
+    match call(model, [almai.user(prompt)], summary_opts) {
+      err(e) => err("compact: ${e}")
+      ok(r) => {
+        let recap = almai.user("Earlier conversation summary:\n\n${r.content}")
+        let next = match trailing_user {
+          none => [recap]
+          some(u) => [recap, u]
+        }
+        println("\x1b[2m[compacted to ${int.to_string(rough_token_count(next))} tokens]\x1b[0m")
+        ok(next)
+      }
+    }
+  }
+}
