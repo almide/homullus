@@ -15,6 +15,8 @@
 import fs
 import process
 
+import self.memory as memory
+
 let MAX_GIT_STATUS_LINES = 60
 
 effect fn read_claude_md() -> String = {
@@ -51,7 +53,8 @@ effect fn read_git_status() -> String = {
 effect fn build() -> String = {
   let claude = read_claude_md()
   let git = read_git_status()
-  let parts = list.filter([claude, git], (s) => s != "")
+  let mem = memory.build()
+  let parts = list.filter([claude, git, mem], (s) => s != "")
   if list.is_empty(parts) then ""
   else "\n\n" + list.join(parts, "\n\n")
 }

@@ -1,0 +1,73 @@
+// memory — lightweight persistent memory.
+//
+// One file: `~/.homullus/MEMORY.md`. Loaded into the system prompt at
+// startup and after every `/remember` write. Ordering preserved as
+// chronological bullets — no vector search, no embedding, no scoring.
+//
+// Three slash commands wire into this:
+//   /remember <text>  → appends a timestamped bullet
+//   /memory           → prints the current contents
+//   /forget           → wipes the file (with confirm via `/forget yes`)
+//
+// MEMORY.md is for facts the user wants persisted across sessions
+// without re-stating them: their stack, preferences, hard constraints,
+// recurring tasks. CLAUDE.md (cwd) is for project-specific conventions
+// and is loaded by `context.almd`. Both end up in the system prompt.
+
+import env
+import fs
+
+effect fn memory_path() -> String =
+  match env.get("HOME") {
+    some(home) => "${home}/.homullus/MEMORY.md"
+    none => "./.homullus/MEMORY.md"
+  }
+
+effect fn memory_dir() -> String =
+  match env.get("HOME") {
+    some(home) => "${home}/.homullus"
+    none => "./.homullus"
+  }
+
+// Read the current memory contents. Returns empty string when the file
+// doesn't exist (first run) — equivalent to "no memory yet".
+effect fn read_all() -> String = {
+  let path = memory_path()
+  match fs.read_text(path) {
+    err(_) => ""
+    ok(text) => text
+  }
+}
+
+// Render as a system-prompt section. Empty when there's nothing.
+// (No leading newlines — context.almd inserts the separator between
+// sections so the joined output stays uniform.)
+effect fn build() -> String = {
+  let text = read_all()
+  let trimmed = string.trim(text)
+  if trimmed == "" then ""
+  else "## User memory (from MEMORY.md)\n\n${trimmed}"
+}
+
+effect fn append_bullet(text: String) -> Result[Unit, String] = {
+  let dir = memory_dir()
+  let path = memory_path()
+  match fs.mkdir_p(dir) {
+    err(e) => err("memory dir: ${e}")
+    ok(_) => {
+      let line = "- ${string.trim(text)}\n"
+      match fs.append(path, line) {
+        err(e) => err("memory append: ${e}")
+        ok(_) => ok(())
+      }
+    }
+  }
+}
+
+effect fn clear_all() -> Result[Unit, String] = {
+  let path = memory_path()
+  match fs.write(path, "") {
+    err(e) => err("memory clear: ${e}")
+    ok(_) => ok(())
+  }
+}

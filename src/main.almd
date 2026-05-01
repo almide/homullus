@@ -20,6 +20,7 @@ import self.tools as ftools
 import self.permission as perm
 import self.context as homu_context
 import self.session as session
+import self.memory as memory
 
 type State = {
   model: String,
@@ -76,6 +77,9 @@ effect fn cmd_help() -> Unit =
       /trust [mode]   Set permission mode (default | accept-edits | bypass)
       /clear          Clear conversation history
       /resume         Resume the most recently saved session
+      /remember <txt> Append <txt> to ~/.homullus/MEMORY.md
+      /memory         Show current MEMORY.md contents
+      /forget yes     Wipe MEMORY.md (requires explicit 'yes')
       /help           Show this help
       /version        Show homullus version
       /exit           Exit homullus
@@ -118,6 +122,40 @@ effect fn handle_slash(state: State, name: String, arg: String) -> Option[State]
           some({ ...state, history: prior })
         }
     }
+    "remember" =>
+      if arg == "" then {
+        io.print("Usage: /remember <fact to persist>\n")
+        some(state)
+      } else match memory.append_bullet(arg) {
+        err(e) => { io.print("remember failed: ${e}\n") ; some(state) }
+        ok(_) => {
+          io.print("Remembered. Reload with new system prompt next turn? Yes — rebuilding now.\n")
+          {
+            let sp = build_system_prompt()
+            some({ ...state, system_prompt: sp })
+          }
+        }
+      }
+    "memory" => {
+      let mem = memory.read_all()
+      if string.trim(mem) == "" then io.print("(no memories yet — use /remember <text>)\n")
+      else io.print("${mem}\n")
+      some(state)
+    }
+    "forget" =>
+      if arg == "yes" then match memory.clear_all() {
+        err(e) => { io.print("forget failed: ${e}\n") ; some(state) }
+        ok(_) => {
+          io.print("All memories cleared.\n")
+          {
+            let sp = build_system_prompt()
+            some({ ...state, system_prompt: sp })
+          }
+        }
+      } else {
+        io.print("Pass 'yes' to confirm: /forget yes\n")
+        some(state)
+      }
     "model" =>
       if arg == "" then {
         io.print("Current model: ${state.model}\n")
