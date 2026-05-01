@@ -1,0 +1,152 @@
+// homullus — Modular AI agent CLI runtime, written in Almide
+//
+// Usage:
+//   almide run src/main.almd
+//   # once installed as a binary:
+//   homu
+//
+// Set at least one provider key in the environment:
+//   ANTHROPIC_API_KEY  OPENAI_API_KEY  OPENROUTER_API_KEY
+//   CF_ACCOUNT_ID + CLOUDFLARE_API_KEY  GOOGLE_API_KEY ...
+//
+// Then pick a model with `/model <provider>/<model>` or set MODEL env var.
+
+import almai
+import env
+import io
+
+import self.agent as agent
+import self.tools as ftools
+import self.permission as perm
+
+type State = {
+  model: String,
+  mode: String,
+  history: List[almai.Message],
+  system_prompt: String,
+}
+
+let DEFAULT_MODEL = "openai/gpt-4o-mini"
+let DEFAULT_MODE  = "default"
+let VERSION       = "0.0.1"
+
+// ── System prompt ──
+
+effect fn build_system_prompt() -> String = {
+  let cwd = env.cwd() |> result.unwrap_or("(unknown)")
+  let os_name = env.os()
+  """
+  You are homullus, a precise CLI coding agent.
+
+  Environment:
+  - Working directory: ${cwd}
+  - OS: ${os_name}
+
+  Tools: Bash, Read, Write, Edit, Glob, Grep.
+
+  Rules:
+  - Use tools to read/write files and run commands. Never guess file contents.
+  - Always use absolute paths. Working directory is ${cwd}.
+  - Be concise. Prefer doing the task over describing it.
+  - When you finish a task, stop calling tools and answer in plain text.
+  """
+}
+
+// ── Slash commands ──
+
+effect fn cmd_help() -> Unit =
+  io.print("""
+    Commands:
+      /model [spec]   Show or set model (e.g. anthropic/claude-sonnet-4-6)
+      /tools          List available tools
+      /trust [mode]   Set permission mode (default | accept-edits | bypass)
+      /clear          Clear conversation history
+      /help           Show this help
+      /exit           Exit famulus
+    """ + "\n")
+
+effect fn cmd_tools() -> Unit = {
+  io.print("Available tools:\n")
+  for td in ftools.definitions() {
+    io.print("  ${td.name} — ${td.description}\n")
+  }
+}
+
+fn parse_slash(input: String) -> Option[(String, String)] =
+  if not string.starts_with(input, "/") then none
+  else {
+    let body = string.drop(input, 1)
+    let space = string.index_of(body, " ") |> option.unwrap_or(-1)
+    if space < 0 then some((body, ""))
+    else some((string.take(body, space), string.trim(string.drop(body, space + 1))))
+  }
+
+effect fn handle_slash(state: State, name: String, arg: String) -> Option[State] =
+  match name {
+    "exit" => none
+    "help" => { cmd_help() ; some(state) }
+    "tools" => { cmd_tools() ; some(state) }
+    "clear" => {
+      io.print("Conversation cleared.\n")
+      some({ ...state, history: [] })
+    }
+    "model" =>
+      if arg == "" then {
+        io.print("Current model: ${state.model}\n")
+        some(state)
+      } else {
+        io.print("Model set to: ${arg}\n")
+        some({ ...state, model: arg })
+      }
+    "trust" =>
+      match arg {
+        ""             => { io.print("Current mode: ${state.mode}\n") ; some(state) }
+        "default"      => { io.print("Permission mode: default\n") ; some({ ...state, mode: "default" }) }
+        "accept-edits" => { io.print("Permission mode: accept-edits\n") ; some({ ...state, mode: "accept-edits" }) }
+        "bypass"       => { io.print("Permission mode: bypass\n") ; some({ ...state, mode: "bypass" }) }
+        _              => { io.print("Usage: /trust [default | accept-edits | bypass]\n") ; some(state) }
+      }
+    _ => { io.print("Unknown command: /${name}. Try /help.\n") ; some(state) }
+  }
+
+// ── REPL ──
+
+effect fn repl(state: State) -> Unit = {
+  io.print("\x1b[1m> \x1b[0m")
+  let raw = io.read_line()
+  let input = string.trim(raw)
+  if input == "" then repl(state)
+  else
+    match parse_slash(input) {
+      some(parts) => match handle_slash(state, parts.0, parts.1) {
+        none => io.print("Bye!\n")
+        some(next) => repl(next)
+      }
+      none => {
+        let next_history = agent.run_turn(
+          state.model,
+          state.history,
+          state.system_prompt,
+          state.mode,
+          input,
+        )
+        io.print("\n")
+        repl({ ...state, history: next_history })
+      }
+    }
+}
+
+// ── Entry ──
+
+effect fn main() -> Unit = {
+  let model = env.get("MODEL") |> option.unwrap_or(DEFAULT_MODEL)
+  let mode  = env.get("HOMU_TRUST") |> option.unwrap_or(DEFAULT_MODE)
+  io.print("homullus v${VERSION}\n")
+  io.print("model: ${model}    trust: ${mode}    /help for commands\n\n")
+  repl(State {
+    model: model,
+    mode: mode,
+    history: [],
+    system_prompt: build_system_prompt(),
+  })
+}

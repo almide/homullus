@@ -1,0 +1,99 @@
+// tools — built-in tool registry & implementations
+//
+// famulus(1) ships 6 tools: Bash, Read, Write, Edit, Glob, Grep.
+// Each tool returns Result[String, String]. The agent loop feeds
+// the result back to the model as a follow-up message.
+
+import almai.tools as ttools
+import fs
+import json
+import process
+
+fn definitions() -> List[ttools.Tool] = [
+  ttools.tool("Read", "Read a UTF-8 text file and return its contents.",
+    ttools.params([("path", ttools.param_string("Absolute file path to read"))], ["path"])),
+
+  ttools.tool("Write", "Write text content to a file, replacing it if it exists.",
+    ttools.params([
+      ("path",    ttools.param_string("Absolute file path")),
+      ("content", ttools.param_string("Full file contents")),
+    ], ["path", "content"])),
+
+  ttools.tool("Edit", "Replace exactly one occurrence of old_string with new_string in a file.",
+    ttools.params([
+      ("path",       ttools.param_string("Absolute file path")),
+      ("old_string", ttools.param_string("Text to find (must be unique in the file)")),
+      ("new_string", ttools.param_string("Replacement text")),
+    ], ["path", "old_string", "new_string"])),
+
+  ttools.tool("Bash", "Execute a shell command. Returns combined stdout/stderr.",
+    ttools.params([("command", ttools.param_string("Shell command to run via /bin/sh -c"))], ["command"])),
+
+  ttools.tool("Glob", "List files matching a glob pattern (e.g. src/**/*.almd).",
+    ttools.params([("pattern", ttools.param_string("Glob pattern"))], ["pattern"])),
+
+  ttools.tool("Grep", "Search for a regex pattern across files in a directory.",
+    ttools.params([
+      ("pattern", ttools.param_string("Regex to search")),
+      ("path",    ttools.param_string("Directory to search (default: cwd)")),
+    ], ["pattern"])),
+]
+
+fn arg_string(args: Value, key: String) -> String =
+  json.get_string(args, key) |> option.unwrap_or("")
+
+effect fn run_read(args: Value) -> Result[String, String] =
+  fs.read_text(arg_string(args, "path"))
+
+effect fn run_write(args: Value) -> Result[String, String] =
+  match fs.write(arg_string(args, "path"), arg_string(args, "content")) {
+    err(e) => err(e)
+    ok(_)  => ok("wrote ${arg_string(args, "path")}")
+  }
+
+effect fn run_edit(args: Value) -> Result[String, String] = {
+  let path = arg_string(args, "path")
+  let old_s = arg_string(args, "old_string")
+  let new_s = arg_string(args, "new_string")
+  match fs.read_text(path) {
+    err(e) => err(e)
+    ok(content) => {
+      let count = string.count(content, old_s)
+      match count {
+        0 => err("old_string not found in ${path}")
+        1 => match fs.write(path, string.replace(content, old_s, new_s)) {
+          err(e) => err(e)
+          ok(_)  => ok("edited ${path}")
+        }
+        _ => err("old_string occurs ${int.to_string(count)} times in ${path}; needs to be unique")
+      }
+    }
+  }
+}
+
+effect fn run_bash(args: Value) -> Result[String, String] =
+  process.exec("/bin/sh", ["-c", arg_string(args, "command")])
+
+effect fn run_glob(args: Value) -> Result[String, String] =
+  match fs.glob(arg_string(args, "pattern")) {
+    err(e) => err(e)
+    ok(paths) => ok(list.join(paths, "\n"))
+  }
+
+effect fn run_grep(args: Value) -> Result[String, String] = {
+  let pattern = arg_string(args, "pattern")
+  let path = arg_string(args, "path")
+  let target = if path == "" then "." else path
+  process.exec("grep", ["-rEn", "--", pattern, target])
+}
+
+effect fn dispatch(name: String, args: Value) -> Result[String, String] =
+  match name {
+    "Read"  => run_read(args),
+    "Write" => run_write(args),
+    "Edit"  => run_edit(args),
+    "Bash"  => run_bash(args),
+    "Glob"  => run_glob(args),
+    "Grep"  => run_grep(args),
+    _       => err("unknown tool: ${name}"),
+  }

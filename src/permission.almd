@@ -1,0 +1,75 @@
+// permission — tool execution permission resolver
+//
+// 3 modes for famulus(1):
+//   "default"      Read-only tools auto-allow, others ask.
+//   "accept-edits" Read-only + edits auto-allow, Bash still asks.
+//   "bypass"       Everything auto-allows. Use only on trusted projects.
+
+import io
+
+type Decision = | Allow | Confirm | Deny
+
+let READ_ONLY_TOOLS: List[String] = ["Read", "Glob", "Grep"]
+let EDIT_TOOLS: List[String] = ["Write", "Edit"]
+
+fn is_read_only(tool: String) -> Bool = list.contains(READ_ONLY_TOOLS, tool)
+fn is_edit(tool: String) -> Bool = list.contains(EDIT_TOOLS, tool)
+
+fn looks_dangerous(tool: String, args_json: String) -> Bool =
+  if tool != "Bash" then false
+  else
+    string.contains(args_json, "rm -rf") or
+    string.contains(args_json, "rm -fr") or
+    (string.contains(args_json, "curl") and string.contains(args_json, "| sh")) or
+    string.contains(args_json, "mkfs") or
+    string.contains(args_json, ":(){ :|:& };:")
+
+fn classify(mode: String, tool: String, args_json: String) -> Decision =
+  if looks_dangerous(tool, args_json) then Confirm
+  else match mode {
+    "bypass"       => Allow,
+    "accept-edits" => if is_read_only(tool) or is_edit(tool) then Allow else Confirm,
+    _              => if is_read_only(tool) then Allow else Confirm,
+  }
+
+effect fn ask(prompt: String) -> Bool = {
+  io.print(prompt + " [y/N] ")
+  let line = io.read_line()
+  let answer = string.trim(string.to_lower(line))
+  answer == "y" or answer == "yes"
+}
+
+effect fn check(mode: String, tool: String, args_json: String) -> Bool =
+  match classify(mode, tool, args_json) {
+    Allow   => true,
+    Deny    => false,
+    Confirm => ask("[permission] allow ${tool}?"),
+  }
+
+test "is_read_only" {
+  assert(is_read_only("Read"))
+  assert(is_read_only("Grep"))
+  assert(not is_read_only("Bash"))
+}
+
+test "classify default" {
+  assert_eq(classify("default", "Read",  "{}"), Allow)
+  assert_eq(classify("default", "Bash",  "{}"), Confirm)
+  assert_eq(classify("default", "Write", "{}"), Confirm)
+}
+
+test "classify accept-edits" {
+  assert_eq(classify("accept-edits", "Read",  "{}"), Allow)
+  assert_eq(classify("accept-edits", "Write", "{}"), Allow)
+  assert_eq(classify("accept-edits", "Bash",  "{}"), Confirm)
+}
+
+test "classify bypass" {
+  assert_eq(classify("bypass", "Bash", "{}"), Allow)
+}
+
+test "looks_dangerous catches rm -rf" {
+  assert(looks_dangerous("Bash", "{\"command\":\"rm -rf /tmp/x\"}"))
+  assert(not looks_dangerous("Bash", "{\"command\":\"ls\"}"))
+  assert(not looks_dangerous("Read", "{\"command\":\"rm -rf /\"}"))
+}
