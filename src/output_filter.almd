@@ -39,32 +39,27 @@ fn truncate_head_tail(s: String) -> String = {
 
 // Collapse runs of identical-prefix lines (npm install / pip install
 // shape: hundreds of `+ pkg@x.y.z` or `Resolving dependencies...`).
+type CollapseAcc = { collected: List[String], prev_prefix: String, prev_count: Int }
+
 fn collapse_repetitive_lines(s: String) -> String = {
   let lines = string.lines(s)
   if list.len(lines) < 30 then "" + s
   else {
-    // Build a list of (line, count) by collapsing consecutive lines
-    // that share the same first 8 chars.
-    let result = list.fold(lines, ([], "", 0), (acc, line) => {
-      let collected = acc.0
-      let prev_prefix = acc.1
-      let prev_count = acc.2
+    let init = CollapseAcc { collected: [], prev_prefix: "", prev_count: 0 }
+    let result = list.fold(lines, init, (acc, line) => {
       let prefix = string.take(line, 8)
-      if prefix == prev_prefix and prev_prefix != "" then
-        (collected, prev_prefix, prev_count + 1)
+      if prefix == acc.prev_prefix and acc.prev_prefix != "" then
+        CollapseAcc { collected: acc.collected, prev_prefix: acc.prev_prefix, prev_count: acc.prev_count + 1 }
       else {
-        let flushed = if prev_count > 3 then
-          collected + ["... <${int.to_string(prev_count - 1)} more lines like '${prev_prefix}*'>"]
-        else collected
-        (flushed + [line], prefix, 1)
+        let flushed = if acc.prev_count > 3 then
+          acc.collected + ["... <${int.to_string(acc.prev_count - 1)} more lines like '${acc.prev_prefix}*'>"]
+        else acc.collected
+        CollapseAcc { collected: flushed + [line], prev_prefix: prefix, prev_count: 1 }
       }
     })
-    let final_collected = result.0
-    let final_prefix = result.1
-    let final_count = result.2
-    let with_tail = if final_count > 3 then
-      final_collected + ["... <${int.to_string(final_count - 1)} more lines like '${final_prefix}*'>"]
-    else final_collected
+    let with_tail = if result.prev_count > 3 then
+      result.collected + ["... <${int.to_string(result.prev_count - 1)} more lines like '${result.prev_prefix}*'>"]
+    else result.collected
     join_lines(with_tail)
   }
 }
