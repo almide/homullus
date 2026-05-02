@@ -26,7 +26,7 @@ fn join_lines(xs: List[String]) -> String = list.join(xs, "\n")
 // line is itself too long.
 fn truncate_head_tail(s: String) -> String = {
   let total = string.len(s)
-  if total <= HARD_CAP then "" + s
+  if total <= HARD_CAP then s
   else {
     let head_chars = (HARD_CAP * HEAD_RATIO) / 100
     let tail_chars = (HARD_CAP * TAIL_RATIO) / 100
@@ -43,7 +43,7 @@ type CollapseAcc = { collected: List[String], prev_prefix: String, prev_count: I
 
 fn collapse_repetitive_lines(s: String) -> String = {
   let lines = string.lines(s)
-  if list.len(lines) < 30 then "" + s
+  if list.len(lines) < 30 then s
   else {
     let init = CollapseAcc { collected: [], prev_prefix: "", prev_count: 0 }
     let result = list.fold(lines, init, (acc, line) => {
@@ -68,7 +68,7 @@ fn collapse_repetitive_lines(s: String) -> String = {
 fn compress_git_status(s: String) -> String = {
   let lines = list.filter(string.lines(s), (l) => l != "")
   let n = list.len(lines)
-  if n <= 30 then "" + s
+  if n <= 30 then s
   else {
     let modified = list.filter(lines, (l) => string.starts_with(l, " M") or string.starts_with(l, "M "))
     let untracked = list.filter(lines, (l) => string.starts_with(l, "??"))
@@ -96,7 +96,7 @@ fn looks_like_install(output: String) -> Bool = {
 // before it goes back into the LLM history.
 fn filter_output(tool_name: String, output: String) -> String = {
   let total = string.len(output)
-  if total <= MAX_PASSTHROUGH then "" + output
+  if total <= MAX_PASSTHROUGH then output
   else if looks_like_git_status(tool_name, output) then
     compress_git_status(output)
   else if looks_like_install(output) then

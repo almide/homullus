@@ -197,7 +197,6 @@ effect fn repl(state: State) -> Unit = {
         some(next) => repl(next)
       }
       none => {
-        let threshold = read_compact_threshold()
         let result = agent.run_turn(
           (m, ms, op) => agent.streaming_provider(m, ms, op),
           state.model,
@@ -205,7 +204,7 @@ effect fn repl(state: State) -> Unit = {
           state.system_prompt,
           state.mode,
           input,
-          threshold,
+          read_compact_threshold(),
         )!
         // Best-effort save; don't error out the REPL on disk failure.
         match session.save(result.history) {
