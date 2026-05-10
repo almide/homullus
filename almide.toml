@@ -4,4 +4,4 @@ version = "0.0.1"
 description = "Modular AI agent CLI runtime, written in Almide"
 
 [dependencies]
-almai = { git = "https://github.com/almide/almai.git" }
+almai = { git = "https://github.com/halcr/almai.git" }
